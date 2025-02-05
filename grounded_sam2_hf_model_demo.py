@@ -6,6 +6,8 @@ import torch
 import numpy as np
 import supervision as sv
 import pycocotools.mask as mask_util
+import logging
+import time
 from pathlib import Path
 from supervision.draw.color import ColorPalette
 from utils.supervision_utils import CUSTOM_COLOR_MAP
@@ -13,6 +15,13 @@ from PIL import Image
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection 
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 """
 Hyper parameters
@@ -50,24 +59,32 @@ if torch.cuda.get_device_properties(0).major >= 8:
     torch.backends.cudnn.allow_tf32 = True
 
 # build SAM2 image predictor
+logger.info("Starting to load SAM2 model...")
+start_time = time.time()
 sam2_checkpoint = SAM2_CHECKPOINT
 model_cfg = SAM2_MODEL_CONFIG
 sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=DEVICE)
 sam2_predictor = SAM2ImagePredictor(sam2_model)
+logger.info(f"SAM2 model loaded in {time.time() - start_time:.2f} seconds")
 
 # build grounding dino from huggingface
+logger.info("Starting to load Grounding DINO model...")
+start_time = time.time()
 model_id = GROUNDING_MODEL
 processor = AutoProcessor.from_pretrained(model_id)
 grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained(model_id).to(DEVICE)
-
+logger.info(f"Grounding DINO model loaded in {time.time() - start_time:.2f} seconds")
 
 # setup the input image and text prompt for SAM 2 and Grounding DINO
 # VERY important: text queries need to be lowercased + end with a dot
 text = TEXT_PROMPT
 img_path = IMG_PATH
 
-image = Image.open(img_path)
+# Process image
+logger.info(f"Starting to process image: {img_path}")
+start_time = time.time()
 
+image = Image.open(img_path)
 sam2_predictor.set_image(np.array(image.convert("RGB")))
 
 inputs = processor(images=image, text=text, return_tensors="pt").to(DEVICE)
@@ -81,6 +98,20 @@ results = processor.post_process_grounded_object_detection(
     text_threshold=0.3,
     target_sizes=[image.size[::-1]]
 )
+
+logger.info(f"Grounding DINO processing completed in {time.time() - start_time:.2f} seconds")
+
+# SAM2 processing
+start_time = time.time()
+input_boxes = results[0]["boxes"].cpu().numpy()
+
+masks, scores, logits = sam2_predictor.predict(
+    point_coords=None,
+    point_labels=None,
+    box=input_boxes,
+    multimask_output=False,
+)
+logger.info(f"SAM2 processing completed in {time.time() - start_time:.2f} seconds")
 
 """
 Results is a list of dict with the following structure:

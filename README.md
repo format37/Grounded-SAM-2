@@ -1,5 +1,7 @@
 # Grounded SAM 2: Ground and Track Anything in Videos
 
+> **Changes from original repo**: Added FastAPI server to manage camera feed and implemented client script. To use it, following the docker installation steps is enough.
+
 **[IDEA-Research](https://github.com/idea-research)**
 
 [Tianhe Ren](https://rentainhe.github.io/), [Shuo Shen](https://github.com/ShuoShenDe)
