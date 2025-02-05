@@ -37,7 +37,7 @@ RUN python -m pip install -e .
 RUN python -m pip install --no-build-isolation -e grounding_dino
 
 # Install server requirements
-COPY server/requirements.txt server_requirements.txt
+# COPY server_requirements server_requirements.txt
 RUN python -m pip install -r server_requirements.txt
 
 # Expose port 8000 for FastAPI server
