@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  grounded_sam:
+    image: grounded_sam2:1.0
+    build:
+      context: .
+    container_name: gsa
+    command: python grounded_sam2_hf_loop.py  # Define the default command
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./cache/huggingface:/root/.cache/huggingface
+      # - ./grounded_sam2_hf_loop.py:/home/appuser/Grounded-SAM-2/grounded_sam2_hf_loop.py
+      - ./grounded_sam2_hf_server.py:/home/appuser/Grounded-SAM-2/grounded_sam2_hf_server.py
+      - ./grounded_sam2_hf_client.py:/home/appuser/Grounded-SAM-2/grounded_sam2_hf_client.py
+    network_mode: host
+    ipc: host

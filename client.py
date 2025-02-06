@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import pycocotools.mask as mask_util
+import time
 
 # Setup logging
 logging.basicConfig(
@@ -14,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def process_image(image_path: str, text_prompt: str = "car. tire.", server_url: str = "http://localhost:8000") -> dict:
+def process_image(image_path: str, text_prompt: str = "car. tire.", server_url: str = "http://localhost:8765") -> dict:
     """
     Send image to server for processing and return results
     
@@ -36,7 +37,8 @@ def process_image(image_path: str, text_prompt: str = "car. tire.", server_url: 
         response = requests.post(
             f"{server_url}/process-image/",
             files=files,
-            params={'text_prompt': text_prompt}
+            # params={'text_prompt': text_prompt}
+            data={'text_prompt': text_prompt}
         )
         response.raise_for_status()
         return response.json()
@@ -92,8 +94,8 @@ def visualize_results(image_path: str, results: dict, output_path: str = "output
 def main():
     # Define parameters
     image_path = "notebooks/images/truck.jpg"
-    text_prompt = "car. tire."
-    
+    text_prompt = "car. tire." # The point after each prompt is crucial.
+
     # Check if image exists
     if not Path(image_path).exists():
         logger.error(f"Image not found: {image_path}")
@@ -103,19 +105,39 @@ def main():
     logger.info(f"Text prompt: {text_prompt}")
     
     try:
-        # Send request to server
-        results = process_image(image_path, text_prompt)
+        # Run N times and measure execution time
+        total_time = 0
+        num_runs = 100
         
-        # Log results
-        logger.info("Received response from server:")
-        logger.info(f"Number of detected objects: {len(results['annotations'])}")
+        for i in range(num_runs):
+            start_time = time.time()
+            
+            # Send request to server
+            results = process_image(image_path, text_prompt)
+            
+            # Calculate time for this run
+            run_time = time.time() - start_time
+            total_time += run_time
+            
+            logger.info(f"Run {i+1}/{num_runs} completed in {run_time:.2f} seconds")
+            
+            # Only visualize and print results for last run
+            if i == num_runs - 1:
+                # Log results
+                logger.info("Received response from server:")
+                logger.info(f"Number of detected objects: {len(results['annotations'])}")
+                
+                # Visualize results
+                visualize_results(image_path, results)
+                
+                # Print detailed results
+                print("\nDetailed results:")
+                print(json.dumps(results, indent=2))
         
-        # Visualize results
-        visualize_results(image_path, results)
-        
-        # Print detailed results
-        print("\nDetailed results:")
-        print(json.dumps(results, indent=2))
+        # Calculate and print statistics
+        avg_time = total_time / num_runs
+        logger.info(f"\nAverage execution time over {num_runs} runs: {avg_time:.2f} seconds")
+        logger.info(f"Total time: {total_time:.2f} seconds")
         
     except Exception as e:
         logger.error(f"Error processing image: {e}")

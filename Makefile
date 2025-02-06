@@ -15,7 +15,8 @@ endif
 
 # Add the list of supported ARCHs
 ifeq ($(USE_CUDA), 1)
-	TORCH_CUDA_ARCH_LIST := "7.0;7.5;8.0;8.6+PTX"
+	# TORCH_CUDA_ARCH_LIST := "7.0;7.5;8.0;8.6+PTX"
+	export TORCH_CUDA_ARCH_LIST="8.9+PTX"
 	BUILD_MESSAGE := "I will try to build the image with CUDA support"
 else
 	TORCH_CUDA_ARCH_LIST :=
@@ -28,10 +29,17 @@ build-image:
 	docker build --build-arg USE_CUDA=$(USE_CUDA) \
 	--build-arg TORCH_ARCH=$(TORCH_CUDA_ARCH_LIST) \
 	-t grounded_sam2:1.0 .
+# run:
+# 	docker run --gpus all -it --rm --net=host --privileged \
+# 	-v /tmp/.X11-unix:/tmp/.X11-unix \
+# 	-v $$(pwd):/home/appuser/Grounded-SAM-2 \
+# 	-e DISPLAY=$(DISPLAY) \
+# 	--name=gsa \
+# 	--ipc=host -it grounded_sam2:1.0
+
 run:
-	docker run --gpus all -it --rm --net=host --privileged \
-	-v /tmp/.X11-unix:/tmp/.X11-unix \
-	-v $$(pwd):/home/appuser/Grounded-SAM-2 \
-	-e DISPLAY=$(DISPLAY) \
+	docker run --gpus all -it --rm --net=host \
+	-v ./cache/huggingface:/root/.cache/huggingface \
+	-v ./grounded_sam2_hf_loop.py:/home/appuser/Grounded-SAM-2/grounded_sam2_hf_loop.py \
 	--name=gsa \
-	--ipc=host -it grounded_sam2:1.0
+	-it grounded_sam2:1.0

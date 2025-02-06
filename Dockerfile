@@ -1,7 +1,7 @@
 FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-devel
 
 # Arguments to build Docker Image using CUDA
-ARG USE_CUDA=0
+ARG USE_CUDA=1
 ARG TORCH_ARCH="7.0;7.5;8.0;8.6"
 
 ENV AM_I_DOCKER=True
@@ -25,7 +25,6 @@ COPY . /home/appuser/Grounded-SAM-2/
 
 WORKDIR /home/appuser/Grounded-SAM-2
 
-
 # Install essential Python packages
 RUN python -m pip install --upgrade pip setuptools wheel numpy \
     opencv-python transformers supervision pycocotools addict yapf timm
@@ -40,8 +39,12 @@ RUN python -m pip install --no-build-isolation -e grounding_dino
 # COPY server_requirements server_requirements.txt
 RUN python -m pip install -r server_requirements.txt
 
-# Expose port 8000 for FastAPI server
-EXPOSE 8000
+# RUN rm /home/appuser/Grounded-SAM-2/grounded_sam2_hf_loop.py
+RUN rm /home/appuser/Grounded-SAM-2/grounded_sam2_hf_server.py
+RUN rm /home/appuser/Grounded-SAM-2/grounded_sam2_hf_client.py
 
+# Expose port 8000 for FastAPI server
+EXPOSE 8765
 # Run the FastAPI server
-CMD ["python", "grounded_sam2_hf_server.py"]
+# CMD ["python", "-m", "uvicorn", "grounded_sam2_hf_loop:app", "--host", "0.0.0.0", "--port", "8000"]
+
