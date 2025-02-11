@@ -107,7 +107,7 @@ def main():
     try:
         # Run N times and measure execution time
         total_time = 0
-        num_runs = 100
+        num_runs = 10
         
         for i in range(num_runs):
             start_time = time.time()

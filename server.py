@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 # semaphore = Semaphore(1)  # Replace asyncio semaphore with FastAPI semaphore
+# Add request counter
+request_counter = 0
 
 # Add test endpoint
 @app.get("/test")
@@ -103,7 +105,11 @@ async def process_image(
     text_prompt: str = Form(default="car. tire.")
 ):
     try:
-        # logger.info(f"Received text prompt: {text_prompt}")
+        # Update global counter
+        global request_counter
+        request_counter += 1
+        logger.info(f">> [{request_counter}] prompt: {text_prompt}")
+        
         # Read and validate the uploaded image
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
