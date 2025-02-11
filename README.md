@@ -24,3 +24,8 @@ python client.py
 
 # Based on
 [IDEA-Research Grounded-SAM-2](https://github.com/IDEA-Research/Grounded-SAM-2)
+
+# OCR
+```
+pip install pytesseract==0.3.13
+```
