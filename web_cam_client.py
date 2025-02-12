@@ -10,6 +10,7 @@ import time
 import os
 from local_ocr import ImageTextExtractor
 from gpt_vision import ImageAnalyzer
+from object_tracker import ObjectTracker
 
 # Setup logging
 logging.basicConfig(
@@ -22,7 +23,10 @@ logger = logging.getLogger(__name__)
 text_extractor = ImageTextExtractor()
 image_analyzer = ImageAnalyzer()
 
-def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url: str = "http://localhost:8765", use_gpt_vision: bool = False, use_ocr: bool = True) -> dict:
+tracking_distance_threshold = 50.0
+
+def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url: str = "http://localhost:8765", 
+                 use_gpt_vision: bool = False, use_ocr: bool = True, use_tracking: bool = True) -> dict:
     """
     Send image to server for processing and return results with text recognition
     
@@ -32,6 +36,7 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
         server_url: URL of the server
         use_gpt_vision: Whether to use GPT Vision instead of OCR
         use_ocr: Whether to use OCR (ignored if use_gpt_vision is True)
+        use_tracking: Whether to use object tracking
     
     Returns:
         dict: Server response containing annotations
@@ -55,6 +60,10 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
         )
         response.raise_for_status()
         results = response.json()
+        
+        # Apply object tracking if enabled
+        if use_tracking and hasattr(process_image, 'tracker'):
+            results['annotations'] = process_image.tracker.update(results['annotations'])
         
         # Extract text from each detected object
         for ann in results['annotations']:
@@ -90,6 +99,9 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
     except requests.exceptions.RequestException as e:
         logger.error(f"Error making request to server: {e}")
         raise
+
+# Initialize tracker as a static variable of process_image function
+process_image.tracker = ObjectTracker(max_frames=5, distance_threshold=tracking_distance_threshold)
 
 def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
     """
@@ -141,8 +153,27 @@ def main():
         return
     
     # Set resolution to 2048x1536
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2048)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1536)
+    # Common webcam resolutions with IDs
+    RESOLUTIONS = {
+        0: (2048, 1536, "3MP"),
+        1: (1920, 1080, "1080p"),
+        2: (1280, 720, "720p"), 
+        3: (640, 480, "VGA"),
+        4: (320, 240, "QVGA")
+    }
+    
+    # Choose resolution ID (default to 1080p if invalid)
+    resolution_id = 3  # Change this ID to select different resolution
+    
+    if resolution_id not in RESOLUTIONS:
+        logger.warning(f"Invalid resolution ID {resolution_id}, defaulting to 1080p")
+        resolution_id = 1
+        
+    width, height, name = RESOLUTIONS[resolution_id]
+    logger.info(f"Setting resolution to {name} ({width}x{height})")
+    
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
 
     actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
@@ -168,7 +199,7 @@ def main():
     
     use_ocr = False
     use_gpt_vision = False
-    
+    use_tracking = True    
     
     objects_saved = False
     
@@ -189,7 +220,10 @@ def main():
             break
 
         # Process frame
-        results = process_image(frame, text_prompt, use_gpt_vision=use_gpt_vision, use_ocr=use_ocr)
+        results = process_image(frame, text_prompt, 
+                              use_gpt_vision=use_gpt_vision, 
+                              use_ocr=use_ocr,
+                              use_tracking=use_tracking)
         
         # After running the model and getting results
         if results is not None and len(results['annotations']) > 0:  # Check if we have any detections
