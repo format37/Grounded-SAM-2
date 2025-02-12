@@ -11,6 +11,7 @@ import os
 from local_ocr import ImageTextExtractor
 from gpt_vision import ImageAnalyzer
 from object_tracker import ObjectTracker
+import argparse
 
 # Setup logging
 logging.basicConfig(
@@ -79,11 +80,30 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
             cropped_obj = masked_obj[y1:y2, x1:x2]
             
             if use_gpt_vision:
+                # Extract object ID from label (format: "[id] label")
+                object_id = None
+                if '[' in ann['label']:
+                    try:
+                        object_id = int(ann['label'].split('[')[1].split(']')[0])
+                    except (IndexError, ValueError):
+                        pass
+
                 # Convert numpy array to bytes
                 success, encoded_obj = cv2.imencode('.jpg', cropped_obj)
                 if success:
-                    # Get description from GPT Vision
-                    description = image_analyzer.describe_image(encoded_obj.tobytes())
+                    # Get description from GPT Vision with object ID
+                    description = image_analyzer.describe_image(
+                        encoded_obj.tobytes(),
+                        object_id=object_id
+                    )
+                    
+                    # Log whether the result was cached
+                    if 'cached' in description:
+                        if description['cached']:
+                            logger.info(f"Using cached description for object {object_id}")
+                        else:
+                            logger.info(f"New GPT Vision analysis for object {object_id}")
+                    
                     ann['extracted_text'] = description.get('description', '...')
                 else:
                     ann['extracted_text'] = '...'
@@ -146,6 +166,25 @@ def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
     return cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR)
 
 def main():
+    # Get API key from command line arguments or config file
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--api_key', help='OpenAI API key')
+    args = parser.parse_args()
+
+    api_key = args.api_key
+    if not api_key:
+        try:
+            with open('config.json', 'r') as f:
+                config = json.load(f)
+                api_key = config.get('api_key')
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            logger.error("API key not provided and couldn't be loaded from config.json")
+            return
+
+    # Initialize image analyzer with API key
+    global image_analyzer
+    image_analyzer = ImageAnalyzer(api_key=api_key)
+
     # Initialize webcam
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -198,7 +237,7 @@ def main():
     text_prompt = "product." # The point after each prompt is crucial.
     
     use_ocr = False
-    use_gpt_vision = False
+    use_gpt_vision = True
     use_tracking = True    
     
     objects_saved = False
