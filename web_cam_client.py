@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 text_extractor = ImageTextExtractor()
 image_analyzer = ImageAnalyzer()
 
-tracking_distance_threshold = 50.0
+tracking_distance_threshold = 100.0
 
-def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url: str = "http://localhost:8765", 
+def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: str = "http://localhost:8765", 
                  use_gpt_vision: bool = False, use_ocr: bool = True, use_tracking: bool = True) -> dict:
     """
     Send image to server for processing and return results with text recognition
@@ -66,7 +66,18 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
         if use_tracking and hasattr(process_image, 'tracker'):
             results['annotations'] = process_image.tracker.update(results['annotations'])
         
-        # Extract text from each detected object
+        # Collect all current object IDs first
+        current_object_ids = set()
+        if use_gpt_vision:
+            for ann in results['annotations']:
+                if '[' in ann['label']:
+                    try:
+                        object_id = int(ann['label'].split('[')[1].split(']')[0])
+                        current_object_ids.add(object_id)
+                    except (IndexError, ValueError):
+                        pass
+
+        # Process each annotation
         for ann in results['annotations']:
             # Decode mask
             mask = mask_util.decode(ann['mask'])
@@ -80,7 +91,7 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
             cropped_obj = masked_obj[y1:y2, x1:x2]
             
             if use_gpt_vision:
-                # Extract object ID from label (format: "[id] label")
+                # Extract object ID from label
                 object_id = None
                 if '[' in ann['label']:
                     try:
@@ -88,32 +99,35 @@ def process_image(image: np.ndarray, text_prompt: str = "car. tyre.", server_url
                     except (IndexError, ValueError):
                         pass
 
-                # Convert numpy array to bytes
-                success, encoded_obj = cv2.imencode('.jpg', cropped_obj)
-                if success:
-                    # Get description from GPT Vision with object ID
-                    description = image_analyzer.describe_image(
-                        encoded_obj.tobytes(),
-                        object_id=object_id
-                    )
-                    
-                    # Log whether the result was cached
-                    if 'cached' in description:
-                        if description['cached']:
-                            logger.info(f"Using cached description for object {object_id}")
+                if object_id is not None:
+                    # Convert numpy array to bytes
+                    success, encoded_obj = cv2.imencode('.jpg', cropped_obj)
+                    if success:
+                        # Try to get pending result or start new request
+                        result = image_analyzer.get_pending_result(object_id)
+                        
+                        if result is None:
+                            # Start new request
+                            result = image_analyzer.describe_image(
+                                encoded_obj.tobytes(),
+                                object_id=object_id
+                            )
+                        
+                        if result["status"] == "completed":
+                            if "error" in result:
+                                ann['extracted_text'] = "Error: " + result["error"]
+                            else:
+                                ann['extracted_text'] = result.get('description', '...')
                         else:
-                            logger.info(f"New GPT Vision analysis for object {object_id}")
-                    
-                    ann['extracted_text'] = description.get('description', '...')
+                            ann['extracted_text'] = "Processing..."
+                    else:
+                        ann['extracted_text'] = 'Image encoding failed'
                 else:
-                    ann['extracted_text'] = '...'
-            elif use_ocr:
-                # Use OCR method
-                extracted_text = text_extractor.extract_text(cropped_obj)
-                ann['extracted_text'] = extracted_text if extracted_text else "..."
-            else:
-                # No text extraction
-                ann['extracted_text'] = "..."
+                    ann['extracted_text'] = 'No ID'
+
+        # Clean up old objects after processing all annotations
+        if use_gpt_vision:
+            image_analyzer.cleanup_old_objects(current_object_ids)
         
         return results
     except requests.exceptions.RequestException as e:
@@ -146,23 +160,29 @@ def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
     for idx, ann in enumerate(results['annotations']):
         color = colors[idx].tolist()
         
-        # Draw mask
+        # Draw mask and bounding box
         mask = mask_util.decode(ann['mask'])
         mask_overlay = vis_image.copy()
         mask_overlay[mask > 0] = np.array(color) * 0.5 + mask_overlay[mask > 0] * 0.5
         vis_image = mask_overlay
         
-        # Draw bounding box
         bbox = ann['bbox']
         x1, y1, x2, y2 = [int(coord) for coord in bbox]
         cv2.rectangle(vis_image, (x1, y1), (x2, y2), color, 2)
         
-        # Update label to include extracted text
-        label = f"{ann['label']} ({ann['extracted_text']}): {ann['confidence']:.2f}"
-        cv2.putText(vis_image, label, (x1, y1-10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-    
-    # Convert back to BGR for display
+        # Update label with extracted text on two lines
+        label_confidence = f"{ann['label']}: {ann['confidence']:.2f}"
+        extracted_text = f"Description: {ann['extracted_text']}"
+        
+        # Draw text with background
+        for i, text in enumerate([label_confidence, extracted_text]):
+            (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+            text_y = y1 - 10 - (text_height + 5) * (1 - i)  # Stack text lines
+            cv2.rectangle(vis_image, (x1, text_y - text_height), (x1 + text_width, text_y + 5), 
+                         color, -1)
+            cv2.putText(vis_image, text, (x1, text_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
     return cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR)
 
 def main():
@@ -202,7 +222,7 @@ def main():
     }
     
     # Choose resolution ID (default to 1080p if invalid)
-    resolution_id = 3  # Change this ID to select different resolution
+    resolution_id = 2  # Change this ID to select different resolution
     
     if resolution_id not in RESOLUTIONS:
         logger.warning(f"Invalid resolution ID {resolution_id}, defaulting to 1080p")
