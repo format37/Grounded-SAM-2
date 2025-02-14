@@ -2,8 +2,9 @@
     "api_key": "",
     "model": "gpt-4o",
     "use_ocr": false,
-    "use_gpt_vision": false,
+    "use_gpt_vision": true,
     "use_tracking": true,
+    "use_barcode": true,
     "tracking_distance_threshold": 100.0,
     "camera": {
         "resolutions": {

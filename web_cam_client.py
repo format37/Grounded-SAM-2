@@ -26,6 +26,33 @@ text_extractor = ImageTextExtractor()
 image_analyzer = ImageAnalyzer()
 barcode_reader = BarcodeReader()
 
+class DetectedObject:
+    def __init__(self, object_id: int, bbox: list, mask: str, label: str):
+        self.id = object_id
+        self.bbox = bbox  # [x1, y1, x2, y2]
+        self.mask = mask
+        self.base_label = label  # Original label from Grounded-SAM-2
+        self.annotation = ""     # Additional description/annotation
+        self.barcode = ""        # Detected barcode
+        self.confidence = 0.0    # Detection confidence
+        self.gpt_vision_pending = False  # New flag to track pending GPT Vision requests
+
+    def get_display_label(self) -> str:
+        """Compose display label from object attributes"""
+        parts = []        
+        parts.append(
+            f"SAM2: {self.base_label}{self.id}"
+        )
+        if self.annotation:
+            parts.append(
+                f"\nVLLM: {self.annotation}"
+            )
+        if self.barcode:
+            parts.append(
+                f"\nBar: {self.barcode}"
+            )
+        return " ".join(parts)
+
 def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: str = "http://localhost:8765", 
                  use_gpt_vision: bool = False, use_ocr: bool = True, use_tracking: bool = True) -> dict:
     """
@@ -42,6 +69,10 @@ def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: 
     Returns:
         dict: Server response containing annotations
     """
+    # Initialize/get objects dictionary if not exists
+    if not hasattr(process_image, 'objects'):
+        process_image.objects = {}
+
     # Convert numpy array to bytes
     success, encoded_image = cv2.imencode('.jpg', image)
     if not success:
@@ -52,7 +83,7 @@ def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: 
         'file': ('image.jpg', encoded_image.tobytes(), 'image/jpeg')
     }
     
-    # Make the request
+    # Perform the SAM2 request
     try:
         response = requests.post(
             f"{server_url}/process-image/",
@@ -62,9 +93,8 @@ def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: 
         response.raise_for_status()
         results = response.json()
         
-        # Apply object tracking if enabled
-        if use_tracking and hasattr(process_image, 'tracker'):
-            results['annotations'] = process_image.tracker.update(results['annotations'])
+        # Apply object tracking
+        results['annotations'] = process_image.tracker.update(results['annotations'])
         
         # Collect all current object IDs first
         current_object_ids = set()
@@ -79,75 +109,76 @@ def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: 
 
         # Process each annotation
         for ann in results['annotations']:
-            # Decode mask
-            mask = mask_util.decode(ann['mask'])
+            # Get or create object ID
+            object_id = None
+            if '[' in ann['label']:
+                try:
+                    object_id = int(ann['label'].split('[')[1].split(']')[0])
+                except (IndexError, ValueError):
+                    pass
             
-            # Create masked image
-            masked_obj = np.zeros_like(image)
-            masked_obj[mask > 0] = image[mask > 0]
-            
-            # Get bbox coordinates and crop
-            x1, y1, x2, y2 = map(int, ann['bbox'])
-            cropped_obj = masked_obj[y1:y2, x1:x2]
-            
-            # Check if this object has a barcode within its boundaries
-            barcode_found = False
-            for other_ann in results['annotations']:
-                if 'barcode' in other_ann['label'].lower():
-                    # Get barcode bbox coordinates
-                    bx1, by1, bx2, by2 = map(int, other_ann['bbox'])
-                    
-                    # Check if barcode bbox is within current object bbox
-                    if (bx1 >= x1 and bx2 <= x2 and by1 >= y1 and by2 <= y2):
-                        # Extract barcode region
-                        barcode_region = image[by1:by2, bx1:bx2]
-                        
-                        # Try to read barcode
-                        try:
-                            barcode_results = barcode_reader.read_barcode(barcode_region)
-                            if barcode_results:
-                                # Add barcode info to the object's label
-                                barcode_data = barcode_results[0].data  # Get first barcode
-                                ann['label'] = f"{ann['label']} [Barcode: {barcode_data}]"
-                                barcode_found = True
-                                break
-                        except Exception as e:
-                            logger.warning(f"Failed to read barcode: {e}")
-            
-            if use_gpt_vision:
-                # Extract object ID from label
-                object_id = None
-                if '[' in ann['label']:
-                    try:
-                        object_id = int(ann['label'].split('[')[1].split(']')[0])
-                    except (IndexError, ValueError):
-                        pass
+            if object_id is not None:
+                # Create or update DetectedObject
+                if object_id not in process_image.objects:
+                    process_image.objects[object_id] = DetectedObject(
+                        object_id=object_id,
+                        bbox=ann['bbox'],
+                        mask=ann['mask'],
+                        label=ann['label']
+                    )
+                # Update existing object
+                obj = process_image.objects[object_id]
+                obj.bbox = ann['bbox']
+                obj.mask = ann['mask']
+                obj.confidence = ann.get('confidence', 0.0)
 
-                if object_id is not None:
-                    # Convert numpy array to bytes
-                    success, encoded_obj = cv2.imencode('.jpg', cropped_obj)
-                    if success:
-                        # Try to get pending result or start new request
-                        result = image_analyzer.get_pending_result(object_id)
+                # Handle GPT Vision processing
+                if use_gpt_vision and obj.base_label != "barcode":
+                    if not obj.annotation and not obj.gpt_vision_pending:
+                        # No annotation and no pending request - start new request
+                        x1, y1, x2, y2 = map(int, obj.bbox)
+                        cropped_obj = image[y1:y2, x1:x2]
                         
-                        if result is None:
-                            # Start new request
+                        success, encoded_obj = cv2.imencode('.jpg', cropped_obj)
+                        if success:
                             result = image_analyzer.describe_image(
                                 encoded_obj.tobytes(),
                                 object_id=object_id
                             )
-                        
-                        if result["status"] == "completed":
-                            if "error" in result:
-                                ann['extracted_text'] = "Error: " + result["error"]
-                            else:
-                                ann['extracted_text'] = result.get('description', '...')
+                            obj.gpt_vision_pending = True
+                            obj.annotation = "Processing..."
                         else:
-                            ann['extracted_text'] = "Processing..."
-                    else:
-                        ann['extracted_text'] = 'Image encoding failed'
-                else:
-                    ann['extracted_text'] = 'No ID'
+                            obj.annotation = 'Image encoding failed'
+                    
+                    elif obj.gpt_vision_pending:
+                        # Check for result if request is pending
+                        result = image_analyzer.get_pending_result(object_id)
+                        if result and result["status"] == "completed":
+                            obj.gpt_vision_pending = False
+                            if "error" in result:
+                                obj.annotation = "Error: " + result["error"]
+                            else:
+                                obj.annotation = result.get('description', '...')
+
+                # Only process barcode if we haven't found one yet
+                if not obj.barcode:
+                    x1, y1, x2, y2 = map(int, obj.bbox)
+                    for other_ann in results['annotations']:
+                        if 'barcode' in other_ann['label'].lower():
+                            bx1, by1, bx2, by2 = map(int, other_ann['bbox'])
+                            
+                            # Check if barcode bbox is within current object bbox
+                            if (bx1 >= x1 and bx2 <= x2 and by1 >= y1 and by2 <= y2):
+                                # Extract barcode region
+                                barcode_region = image[by1:by2, bx1:bx2]
+                                
+                                try:
+                                    barcode_results = barcode_reader.read_barcode(barcode_region)
+                                    if barcode_results:
+                                        obj.barcode = barcode_results[0].data
+                                        break
+                                except Exception as e:
+                                    logger.warning(f"Failed to read barcode: {e}")
 
         # Clean up old objects after processing all annotations
         if use_gpt_vision:
@@ -191,22 +222,43 @@ def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
         x1, y1, x2, y2 = [int(coord) for coord in bbox]
         cv2.rectangle(vis_image, (x1, y1), (x2, y2), color, 2)
         
-        # Update label with extracted text on two lines
-        label_confidence = f"{ann['label']}: {ann['confidence']:.2f}"
-        # Only include extracted text if it exists in annotation
-        texts = [label_confidence]
-        if 'extracted_text' in ann:
-            extracted_text = f"Description: {ann['extracted_text']}"
-            texts.append(extracted_text)
+        # Get object ID if present
+        object_id = None
+        if '[' in ann['label']:
+            try:
+                object_id = int(ann['label'].split('[')[1].split(']')[0])
+            except (IndexError, ValueError):
+                pass
         
-        # Draw text with background
-        for i, text in enumerate(texts):
-            (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-            text_y = y1 - 10 - (text_height + 5) * (1 - i)  # Stack text lines
-            cv2.rectangle(vis_image, (x1, text_y - text_height), (x1 + text_width, text_y + 5), 
-                         color, -1)
-            cv2.putText(vis_image, text, (x1, text_y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        # Get display text from DetectedObject if available
+        if hasattr(process_image, 'objects') and object_id is not None and object_id in process_image.objects:
+            text = process_image.objects[object_id].get_display_label()
+            
+            # Draw text with background
+            lines = text.split('\n')
+            for i, line in enumerate(lines):
+                (text_width, text_height), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                text_y = y1 - 10 - (text_height + 5) * (len(lines) - 1 - i)  # Stack text lines from bottom up
+                cv2.rectangle(vis_image, (x1, text_y - text_height), (x1 + text_width, text_y + 5), 
+                            color, -1)
+                cv2.putText(vis_image, line, (x1, text_y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        else:
+            # Fallback to original text display if object not tracked
+            label_confidence = f"{ann['label']}: {ann['confidence']:.2f}"
+            texts = [label_confidence]
+            if 'extracted_text' in ann:
+                extracted_text = f"Description: {ann['extracted_text']}"
+                texts.append(extracted_text)
+            
+            # Draw text with background (original method)
+            for i, text in enumerate(texts):
+                (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                text_y = y1 - 10 - (text_height + 5) * (1 - i)
+                cv2.rectangle(vis_image, (x1, text_y - text_height), (x1 + text_width, text_y + 5), 
+                            color, -1)
+                cv2.putText(vis_image, text, (x1, text_y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
     return cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR)
 
@@ -236,22 +288,18 @@ def main():
     # Get processing parameters from config
     use_ocr = config.get('use_ocr', False)
     use_gpt_vision = config.get('use_gpt_vision', False)
-    use_tracking = config.get('use_tracking', True)
 
-    # Get tracking threshold from config
-    tracking_distance_threshold = config.get('tracking_distance_threshold', 100.0)  # Default to 100.0 if not in config
-    
+    # Initialize tracker (now always initialized)
+    tracking_distance_threshold = config.get('tracking_distance_threshold', 100.0)
+    process_image.tracker = ObjectTracker(
+        max_frames=5, 
+        distance_threshold=tracking_distance_threshold
+    )
+    logger.info(f"Initialized object tracker with distance threshold: {tracking_distance_threshold}")
+
     # Initialize image analyzer with API key
     global image_analyzer
     image_analyzer = ImageAnalyzer(api_key=api_key)
-
-    # Initialize tracker with config value
-    if use_tracking:
-        process_image.tracker = ObjectTracker(
-            max_frames=5, 
-            distance_threshold=tracking_distance_threshold
-        )
-        logger.info(f"Initialized object tracker with distance threshold: {tracking_distance_threshold}")
 
     # Initialize webcam
     cap = cv2.VideoCapture(0)
@@ -309,7 +357,7 @@ def main():
         results = process_image(frame, text_prompt, 
                               use_gpt_vision=use_gpt_vision, 
                               use_ocr=use_ocr,
-                              use_tracking=use_tracking)
+                              use_tracking=True)
         
         # After running the model and getting results
         if results is not None and len(results['annotations']) > 0:  # Check if we have any detections
