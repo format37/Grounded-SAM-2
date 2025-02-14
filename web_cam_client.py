@@ -12,6 +12,7 @@ from local_ocr import ImageTextExtractor
 from gpt_vision import ImageAnalyzer
 from object_tracker import ObjectTracker
 import argparse
+from barcode_reader import BarcodeReader
 
 # Setup logging
 logging.basicConfig(
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Initialize extractors globally
 text_extractor = ImageTextExtractor()
 image_analyzer = ImageAnalyzer()
+barcode_reader = BarcodeReader()
 
 def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: str = "http://localhost:8765", 
                  use_gpt_vision: bool = False, use_ocr: bool = True, use_tracking: bool = True) -> dict:
@@ -87,6 +89,30 @@ def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: 
             # Get bbox coordinates and crop
             x1, y1, x2, y2 = map(int, ann['bbox'])
             cropped_obj = masked_obj[y1:y2, x1:x2]
+            
+            # Check if this object has a barcode within its boundaries
+            barcode_found = False
+            for other_ann in results['annotations']:
+                if 'barcode' in other_ann['label'].lower():
+                    # Get barcode bbox coordinates
+                    bx1, by1, bx2, by2 = map(int, other_ann['bbox'])
+                    
+                    # Check if barcode bbox is within current object bbox
+                    if (bx1 >= x1 and bx2 <= x2 and by1 >= y1 and by2 <= y2):
+                        # Extract barcode region
+                        barcode_region = image[by1:by2, bx1:bx2]
+                        
+                        # Try to read barcode
+                        try:
+                            barcode_results = barcode_reader.read_barcode(barcode_region)
+                            if barcode_results:
+                                # Add barcode info to the object's label
+                                barcode_data = barcode_results[0].data  # Get first barcode
+                                ann['label'] = f"{ann['label']} [Barcode: {barcode_data}]"
+                                barcode_found = True
+                                break
+                        except Exception as e:
+                            logger.warning(f"Failed to read barcode: {e}")
             
             if use_gpt_vision:
                 # Extract object ID from label
