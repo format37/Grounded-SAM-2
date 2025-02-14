@@ -1,4 +1,18 @@
 {
-    "api_key":"",
-    "model":"gpt-4o"
+    "api_key": "",
+    "model": "gpt-4o",
+    "use_ocr": false,
+    "use_gpt_vision": false,
+    "use_tracking": true,
+    "tracking_distance_threshold": 100.0,
+    "camera": {
+        "resolutions": {
+            "3MP": [2048, 1536],
+            "1080p": [1920, 1080],
+            "720p": [1280, 720],
+            "VGA": [640, 480],
+            "QVGA": [320, 240]
+        },
+        "default_resolution": "720p"
+    }
 }

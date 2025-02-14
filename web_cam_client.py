@@ -24,8 +24,6 @@ logger = logging.getLogger(__name__)
 text_extractor = ImageTextExtractor()
 image_analyzer = ImageAnalyzer()
 
-tracking_distance_threshold = 100.0
-
 def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: str = "http://localhost:8765", 
                  use_gpt_vision: bool = False, use_ocr: bool = True, use_tracking: bool = True) -> dict:
     """
@@ -134,9 +132,6 @@ def process_image(image: np.ndarray, text_prompt: str = "product.", server_url: 
         logger.error(f"Error making request to server: {e}")
         raise
 
-# Initialize tracker as a static variable of process_image function
-process_image.tracker = ObjectTracker(max_frames=5, distance_threshold=tracking_distance_threshold)
-
 def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
     """
     Visualize detection results with bounding boxes, masks, confidence scores, and extracted text
@@ -172,10 +167,14 @@ def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
         
         # Update label with extracted text on two lines
         label_confidence = f"{ann['label']}: {ann['confidence']:.2f}"
-        extracted_text = f"Description: {ann['extracted_text']}"
+        # Only include extracted text if it exists in annotation
+        texts = [label_confidence]
+        if 'extracted_text' in ann:
+            extracted_text = f"Description: {ann['extracted_text']}"
+            texts.append(extracted_text)
         
         # Draw text with background
-        for i, text in enumerate([label_confidence, extracted_text]):
+        for i, text in enumerate(texts):
             (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
             text_y = y1 - 10 - (text_height + 5) * (1 - i)  # Stack text lines
             cv2.rectangle(vis_image, (x1, text_y - text_height), (x1 + text_width, text_y + 5), 
@@ -186,24 +185,47 @@ def visualize_results(image: np.ndarray, results: dict) -> np.ndarray:
     return cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR)
 
 def main():
-    # Get API key from command line arguments or config file
+    # Get API key and other settings from command line arguments or config file
     parser = argparse.ArgumentParser()
     parser.add_argument('--api_key', help='OpenAI API key')
     args = parser.parse_args()
 
-    api_key = args.api_key
-    if not api_key:
-        try:
-            with open('config.json', 'r') as f:
-                config = json.load(f)
-                api_key = config.get('api_key')
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+    # Load config
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.error(f"Error loading config.json: {e}")
+        return
+
+    if config.get('use_gpt_vision', False) == True:
+        # Get API key from args or config
+        api_key = args.api_key or config.get('api_key')
+        if not api_key:
             logger.error("API key not provided and couldn't be loaded from config.json")
             return
+    else:
+        api_key = None
 
+    # Get processing parameters from config
+    use_ocr = config.get('use_ocr', False)
+    use_gpt_vision = config.get('use_gpt_vision', False)
+    use_tracking = config.get('use_tracking', True)
+
+    # Get tracking threshold from config
+    tracking_distance_threshold = config.get('tracking_distance_threshold', 100.0)  # Default to 100.0 if not in config
+    
     # Initialize image analyzer with API key
     global image_analyzer
     image_analyzer = ImageAnalyzer(api_key=api_key)
+
+    # Initialize tracker with config value
+    if use_tracking:
+        process_image.tracker = ObjectTracker(
+            max_frames=5, 
+            distance_threshold=tracking_distance_threshold
+        )
+        logger.info(f"Initialized object tracker with distance threshold: {tracking_distance_threshold}")
 
     # Initialize webcam
     cap = cv2.VideoCapture(0)
@@ -211,25 +233,19 @@ def main():
         logger.error("Could not open webcam")
         return
     
-    # Set resolution to 2048x1536
-    # Common webcam resolutions with IDs
-    RESOLUTIONS = {
-        0: (2048, 1536, "3MP"),
-        1: (1920, 1080, "1080p"),
-        2: (1280, 720, "720p"), 
-        3: (640, 480, "VGA"),
-        4: (320, 240, "QVGA")
-    }
+    # Get resolution settings from config
+    camera_config = config.get('camera', {})
+    resolutions = camera_config.get('resolutions', {})
+    default_resolution = camera_config.get('default_resolution', '720p')
     
-    # Choose resolution ID (default to 1080p if invalid)
-    resolution_id = 2  # Change this ID to select different resolution
-    
-    if resolution_id not in RESOLUTIONS:
-        logger.warning(f"Invalid resolution ID {resolution_id}, defaulting to 1080p")
-        resolution_id = 1
+    # Get resolution values
+    if default_resolution not in resolutions:
+        logger.warning(f"Invalid resolution {default_resolution}, defaulting to 720p")
+        width, height = (1280, 720)  # 720p fallback
+    else:
+        width, height = resolutions[default_resolution]
         
-    width, height, name = RESOLUTIONS[resolution_id]
-    logger.info(f"Setting resolution to {name} ({width}x{height})")
+    logger.info(f"Setting resolution to {default_resolution} ({width}x{height})")
     
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -237,29 +253,11 @@ def main():
     actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
     logger.info(f"Actual resolution: {actual_width}x{actual_height}")
-
-    # text_prompt = ''
-    # text_prompt+='household/paper_goods.'
-    # text_prompt+=' beverages/tea.'
-    # text_prompt+=' dairy/cream.'
-    # text_prompt+=' groceries/sweeteners.'
-    # text_prompt+=' toys/puzzles.'
-    # text_prompt+=' groceries/seasonings.'
-
-    # text_prompt = ''
-    # text_prompt+='toilet_paper.'
-    # text_prompt+=' tea.'
-    # text_prompt+=' cream.'
-    # text_prompt+=' salt.'
-    # text_prompt+=' toy.'
-    # text_prompt+=' sweetener.'
     
-    text_prompt = "product." # The point after each prompt is crucial.
+    text_prompt = "product. barcode." # The point after each prompt is crucial.
     
-    use_ocr = False
-    use_gpt_vision = True
-    use_tracking = True    
-    
+    # Add frame counter before the while loop
+    frame_counter = 0
     objects_saved = False
     
     # Add FPS calculation variables
@@ -278,6 +276,9 @@ def main():
             logger.error("Could not read frame from webcam")
             break
 
+        # Increment frame counter
+        frame_counter += 1
+
         # Process frame
         results = process_image(frame, text_prompt, 
                               use_gpt_vision=use_gpt_vision, 
@@ -286,7 +287,7 @@ def main():
         
         # After running the model and getting results
         if results is not None and len(results['annotations']) > 0:  # Check if we have any detections
-            if not objects_saved:
+            if not objects_saved and frame_counter > 10:  # Only save after 10th frame
                 # Log original image dimensions
                 height, width = frame.shape[:2]
                 logger.info(f"Original image dimensions: {width}x{height}")
@@ -299,24 +300,32 @@ def main():
                     # Get bbox coordinates
                     x1, y1, x2, y2 = map(int, ann['bbox'])
                     
-                    # Create a blank green box image
-                    obj_height = y2 - y1
-                    obj_width = x2 - x1
-                    green_box = np.zeros((obj_height, obj_width, 3), dtype=np.uint8)
-                    green_box[:, :] = [0, 255, 0]  # Green color
-                    
-                    # Create mask for this object
-                    mask = mask_util.decode(ann['mask'])
-                    
-                    # Extract object from original image using mask
-                    masked_obj = np.zeros_like(frame)
-                    masked_obj[mask > 0] = frame[mask > 0]
-                    
-                    # Crop the masked object to bbox
-                    cropped_obj = masked_obj[y1:y2, x1:x2]
-                    
-                    # Combine with green background
-                    final_obj = np.where(cropped_obj != 0, cropped_obj, green_box)
+                    # If the detected label contains "barcode", skip mask and save only the cropped bounding box
+                    if 'barcode' in ann['label'].lower():
+                        # Just crop from the original frame
+                        cropped_obj = frame[y1:y2, x1:x2]
+                        final_obj = cropped_obj
+                    else:
+                        # Original approach: replace everything outside mask with green
+                        
+                        # Create a blank green box image
+                        obj_height = y2 - y1
+                        obj_width = x2 - x1
+                        green_box = np.zeros((obj_height, obj_width, 3), dtype=np.uint8)
+                        green_box[:, :] = [0, 255, 0]  # Green color
+
+                        # Create mask for this object
+                        mask = mask_util.decode(ann['mask'])
+
+                        # Extract object from original image using mask
+                        masked_obj = np.zeros_like(frame)
+                        masked_obj[mask > 0] = frame[mask > 0]
+
+                        # Crop the masked object to bbox
+                        cropped_obj = masked_obj[y1:y2, x1:x2]
+
+                        # Combine with green background
+                        final_obj = np.where(cropped_obj != 0, cropped_obj, green_box)
                     
                     # Save the image
                     filename = f"image_{i}_{ann['label']}_{ann['confidence']:.2f}.png"
