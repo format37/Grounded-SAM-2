@@ -5,7 +5,7 @@
     "use_gpt_vision": true,
     "use_tracking": true,
     "use_barcode": true,
-    "tracking_distance_threshold": 100.0,
+    "tracking_distance_threshold": 20.0,
     "camera": {
         "resolutions": {
             "3MP": [2048, 1536],
@@ -15,5 +15,7 @@
             "QVGA": [320, 240]
         },
         "default_resolution": "720p"
-    }
+    },
+    "max_frames": 4,
+    "text_prompt": "product. barcode."
 }
