@@ -14,7 +14,7 @@
             "VGA": [640, 480],
             "QVGA": [320, 240]
         },
-        "default_resolution": "720p"
+        "default_resolution": "1080p"
     },
     "max_frames": 4,
     "text_prompt": "product. barcode."

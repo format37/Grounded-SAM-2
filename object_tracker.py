@@ -243,12 +243,6 @@ class ObjectTracker:
     def visualize_frame(self, image: np.ndarray, frame_objects: Dict[int, Dict[str, Any]]) -> np.ndarray:
         """
         Visualize detection results with bounding boxes, masks, and annotations
-        
-        Args:
-            image: numpy array of the original image
-            frame_objects: Dictionary of tracked objects in the current frame
-        Returns:
-            numpy array of the visualized image
         """
         # Convert BGR to RGB
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -272,16 +266,30 @@ class ObjectTracker:
             x1, y1, x2, y2 = [int(coord) for coord in bbox]
             cv2.rectangle(vis_image, (x1, y1), (x2, y2), color, 2)
             
-            # Prepare display text with description
+            # Prepare display text
             confidence = obj_data.get('confidence', 0) * 100
-            label = f"({obj_id}) {obj_data['label']} {confidence:.1f}%"
+            lines = [f"({obj_id}) {obj_data['label']} {confidence:.1f}%"]
+            
             if 'barcode' in obj_data:
-                label += f"\nBar: {obj_data['barcode']}"
-            if 'description' in obj_data:
-                label += f"\nVLM: {obj_data['description']}"
+                lines.append(f"Bar: {obj_data['barcode']}")
+            
+            # Add structured description if available
+            if 'structured_description' in obj_data:
+                desc = obj_data['structured_description']
+                if isinstance(desc, str):
+                    lines.append(f"VLM: {desc}")
+                else:
+                    # Format each field of ObjectDescription
+                    lines.extend([
+                        f"Desc: {desc.description}",
+                        f"Conf: {desc.description_confidence_01:.2f}",
+                        f"Dept: {desc.department}",
+                        f"Form: {desc.form}",
+                        f"Fill: {desc.filling}",
+                        f"Weight: {desc.weight_grams:.1f}g"
+                    ])
             
             # Draw multi-line text with background
-            lines = label.split('\n')
             for i, line in enumerate(lines):
                 (text_width, text_height), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                 text_y = y1 - 10 - (text_height + 5) * (len(lines) - 1 - i)
@@ -374,8 +382,6 @@ class ObjectTracker:
     def process_descriptions(self, image: np.ndarray, tracked_objects: Dict[int, Dict[str, Any]]) -> None:
         """
         Process VLM descriptions for tracked objects.
-        :param image: The image frame as a NumPy array
-        :param tracked_objects: Dictionary of tracked objects
         """
         if not self.init_image_analyzer():
             return
@@ -384,12 +390,12 @@ class ObjectTracker:
         for obj_id, obj_data in tracked_objects.items():
             # Skip if object already has a description
             if obj_id in self.object_descriptions:
-                obj_data['description'] = self.object_descriptions[obj_id]
+                obj_data['structured_description'] = self.object_descriptions[obj_id]
                 continue
 
             # Skip if description request is pending
             if obj_id in self.description_pending:
-                obj_data['description'] = "Processing..."
+                obj_data['structured_description'] = "Processing..."
                 # Check if the pending request is complete
                 result = self.image_analyzer.get_pending_result(obj_id)
                 if result and result["status"] == "completed":
@@ -397,9 +403,9 @@ class ObjectTracker:
                     if "error" in result:
                         description = f"Error: {result['error']}"
                     else:
-                        description = result.get('description', '...')
+                        description = result.get('description')  # This is now an ObjectDescription instance
                     self.object_descriptions[obj_id] = description
-                    obj_data['description'] = description
+                    obj_data['structured_description'] = description
                 continue
 
             # Start new description request
@@ -410,13 +416,14 @@ class ObjectTracker:
             if success:
                 self.image_analyzer.describe_image(
                     encoded_obj.tobytes(),
-                    object_id=obj_id
+                    object_id=obj_id,
+                    prompt="Describe this object according to its description, department, form, filling, and weight."
                 )
                 self.description_pending.add(obj_id)
-                obj_data['description'] = "Processing..."
+                obj_data['structured_description'] = "Processing..."
                 logging.info(f"Started description request for object {obj_id}")
             else:
-                obj_data['description'] = "Image encoding failed"
+                obj_data['structured_description'] = "Image encoding failed"
 
     def calculate_fps(self) -> float:
         """

@@ -9,6 +9,7 @@ import logging
 import asyncio
 import concurrent.futures
 import threading
+from web_cam_client import ObjectDescription
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +86,22 @@ class ImageAnalyzer:
             image_url = self._process_image(image)
             
             messages = []
+            # Update the prompt to be more specific about required fields
+            # system_message = """You are a product analysis system. Analyze the image and provide:
+            # - A brief description of what you see
+            # - A confidence score between 0 and 1
+            # - The department it belongs to (tea, milk, battery, tools, or other)
+            # - The form factor (parallelepiped, cylinder, sphere, or other)
+            # - The filling type (liquid, solid, empty, or other)
+            # - Estimated weight in kg (float number)
+            
+            # Respond in valid JSON format matching the schema provided."""
+            
+            # self._append_message(messages, "system", system_message)
             self._append_message(messages, "user", prompt, image_url)
+
+            # Get ObjectDescription schema
+            vlm_schema = ObjectDescription.model_json_schema()
 
             start_time = time.time()
             logger.info("sending request to openai")
@@ -95,7 +111,14 @@ class ImageAnalyzer:
                 json={
                     "model": self.model,
                     "messages": messages,
-                    "max_tokens": 500
+                    "max_tokens": 500,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "ObjectDescription",
+                            "schema": vlm_schema
+                        }
+                    }
                 }
             )
             if not response.ok:
@@ -106,19 +129,51 @@ class ImageAnalyzer:
             
             response_json = response.json()
             description = response_json['choices'][0]['message']['content']
-            logger.info(f"received response from openai: {description}")
-
-            return {
-                "description": description,
-                "elapsed_time": elapsed_time,
-                "cached": False
-            }
+            logger.debug(f"Raw GPT response: {description}")
+            
+            try:
+                # Parse the JSON response into ObjectDescription
+                description_obj = ObjectDescription.model_validate_json(description)
+                return {
+                    "description": description_obj,
+                    "elapsed_time": elapsed_time,
+                    "cached": False
+                }
+            except Exception as validation_error:
+                logger.error(f"Validation error: {validation_error}")
+                # Return a default ObjectDescription object
+                return {
+                    "description": ObjectDescription(
+                        description="Error parsing response",
+                        description_confidence_01=0.0,
+                        department="other",
+                        form="other",
+                        filling="other",
+                        weight=0.0
+                    ),
+                    "elapsed_time": elapsed_time,
+                    "cached": False,
+                    "error": str(validation_error)
+                }
             
         except Exception as e:
-            return {"error": str(e)}
+            logger.error(f"Error in _describe_image_sync: {e}")
+            return {
+                "description": ObjectDescription(
+                    description=f"Error: {str(e)}",
+                    description_confidence_01=0.0,
+                    department="other",
+                    form="other",
+                    filling="other",
+                    weight=0.0
+                ),
+                "elapsed_time": 0,
+                "cached": False,
+                "error": str(e)
+            }
 
     def describe_image(self, image_data: bytes, object_id: int = None, 
-                      prompt: str = "Please classify in one short sentence what you see in this image?") -> Dict:
+                      prompt: str = "Please, describe what you see") -> Dict:
         """Asynchronous image description - returns immediately with status"""
         logger.debug(f"Processing image for object {object_id}")
         

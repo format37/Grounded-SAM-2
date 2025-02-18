@@ -3,9 +3,19 @@ import logging
 import cv2
 from object_tracker import ObjectTracker
 from webcam_handler import WebcamHandler
+from pydantic import BaseModel, Field
+from typing import Literal, List, Union, Any
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s")
+
+class ObjectDescription(BaseModel):
+    description: str
+    description_confidence_01: float
+    department: Literal["tea", "milk", "battery", "tools", "other"]
+    form: Literal["parallelepiped", "cylinder", "sphere", "other"]
+    filling: Literal["liquid", "solid", "empty", "other"]
+    weight_grams: int
 
 def main():
     # Create an instance of the ObjectTracker using the config file
